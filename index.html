@@ -175,7 +175,7 @@ async function load(){
       {headers:{Accept:"application/vnd.github+json"}});
     if (!res.ok) throw new Error(res.status);
     const data = (await res.json())
-      .filter(r => !r.fork && !r.archived)
+      .filter(r => !r.fork && !r.archived && r.name !== `${USER}.github.io`)
       .map(r => ({
         name: r.name, description: r.description,
         has_pages: r.has_pages, language: r.language,
