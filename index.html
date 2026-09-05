@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chansvet의 앱 모음</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --fg:#16181d; --muted:#5f6672;
+    --line:#e3e6ea; --accent:#2563eb; --accent-fg:#ffffff; --chip:#eef1f5;
+    --shadow:0 1px 2px rgba(16,20,28,.06),0 8px 24px rgba(16,20,28,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0f1115; --card:#171a21; --fg:#e8eaee; --muted:#9aa3b1;
+      --line:#252a33; --accent:#4f86ff; --accent-fg:#0b0d11; --chip:#20242d;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard",
+      "Segoe UI",Roboto,"Noto Sans KR",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px; margin:0 auto; padding:40px 20px 64px}
+  header h1{font-size:28px; margin:0 0 6px; letter-spacing:-.02em}
+  header p{margin:0; color:var(--muted); font-size:14px}
+  .tools{display:flex; gap:10px; margin:24px 0 20px; flex-wrap:wrap}
+  input[type=search]{
+    flex:1 1 220px; min-width:0; padding:11px 14px; font-size:15px;
+    border:1px solid var(--line); border-radius:10px; background:var(--card);
+    color:var(--fg); outline:none;
+  }
+  input[type=search]:focus{border-color:var(--accent)}
+  select{
+    padding:11px 12px; font-size:14px; border:1px solid var(--line);
+    border-radius:10px; background:var(--card); color:var(--fg);
+  }
+  .grid{display:grid; gap:14px; grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:18px; box-shadow:var(--shadow); display:flex; flex-direction:column; gap:10px;
+  }
+  .card h2{margin:0; font-size:17px; letter-spacing:-.01em; word-break:break-all}
+  .desc{margin:0; font-size:14px; line-height:1.55; color:var(--muted); flex:1}
+  .meta{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+  .chip{
+    background:var(--chip); color:var(--muted); font-size:12px;
+    padding:3px 9px; border-radius:999px; white-space:nowrap;
+  }
+  .actions{display:flex; gap:8px; margin-top:2px}
+  a.btn{
+    text-decoration:none; font-size:14px; font-weight:600; padding:9px 14px;
+    border-radius:9px; border:1px solid var(--line); color:var(--fg);
+    background:transparent; display:inline-block;
+  }
+  a.btn.primary{background:var(--accent); color:var(--accent-fg); border-color:transparent}
+  a.btn:hover{border-color:var(--accent)}
+  .note{margin-top:28px; font-size:13px; color:var(--muted); text-align:center}
+  .note a{color:var(--muted)}
+  .empty{color:var(--muted); font-size:14px; padding:24px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>chansvet의 앱 모음</h1>
+    <p id="sub">불러오는 중…</p>
+  </header>
+
+  <div class="tools">
+    <input type="search" id="q" placeholder="이름이나 설명으로 검색" autocomplete="off">
+    <select id="sort">
+      <option value="updated">최근 수정순</option>
+      <option value="name">이름순</option>
+    </select>
+  </div>
+
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" hidden>검색 결과가 없습니다.</div>
+
+  <p class="note">
+    GitHub 공개 저장소를 자동으로 읽어옵니다. 새 저장소를 올리면 여기에 바로 나타납니다.
+    · <a href="https://github.com/chansvet">github.com/chansvet</a>
+  </p>
+</div>
+
+<script>
+const USER = "chansvet";
+const CACHE_KEY = "repo-hub-cache-v1";
+const CACHE_MS = 10 * 60 * 1000;
+
+// API가 막혔을 때(요청 한도 등) 보여줄 최소 목록
+const FALLBACK = [
+  {name:"vet_calculator", description:"", has_pages:true, language:"HTML", updated_at:"2026-09-04T13:56:23Z"},
+  {name:"injection-inventory", description:"약장·냉장고를 돌며 주문할 수량만 담아 발주 목록을 만드는 주사제 재고 앱", has_pages:true, language:"HTML", updated_at:"2026-08-31T14:58:40Z"},
+  {name:"pomodoro-timer", description:"베이지-핑크 톤의 미니멀 뽀모도로 타이머 (단일 HTML)", has_pages:true, language:"HTML", updated_at:"2026-08-31T14:53:56Z"},
+  {name:"drug-ref", description:"약물 검색", has_pages:true, language:"HTML", updated_at:"2026-06-23T03:11:32Z"}
+];
+
+let repos = [];
+
+function timeAgo(iso){
+  const d = (Date.now() - new Date(iso)) / 86400000;
+  if (d < 1) return "오늘";
+  if (d < 30) return Math.floor(d) + "일 전";
+  if (d < 365) return Math.floor(d/30) + "개월 전";
+  return Math.floor(d/365) + "년 전";
+}
+
+function esc(s){
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function render(){
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const sort = document.getElementById("sort").value;
+
+  let list = repos.filter(r =>
+    !q || r.name.toLowerCase().includes(q) ||
+    (r.description || "").toLowerCase().includes(q));
+
+  list.sort((a, b) => sort === "name"
+    ? a.name.localeCompare(b.name)
+    : new Date(b.updated_at) - new Date(a.updated_at));
+
+  document.getElementById("grid").innerHTML = list.map(r => {
+    const pages = `https://${USER}.github.io/${r.name}/`;
+    const code  = `https://github.com/${USER}/${r.name}`;
+    return `<div class="card">
+      <h2>${esc(r.name)}</h2>
+      <p class="desc">${esc(r.description) || "설명 없음"}</p>
+      <div class="meta">
+        ${r.language ? `<span class="chip">${esc(r.language)}</span>` : ""}
+        <span class="chip">${timeAgo(r.updated_at)}</span>
+      </div>
+      <div class="actions">
+        ${r.has_pages ? `<a class="btn primary" href="${pages}">열기</a>` : ""}
+        <a class="btn" href="${code}">코드</a>
+      </div>
+    </div>`;
+  }).join("");
+
+  document.getElementById("empty").hidden = list.length > 0;
+}
+
+function setSub(n, stale){
+  document.getElementById("sub").textContent =
+    `공개 저장소 ${n}개` + (stale ? " · 저장된 목록 표시 중" : "");
+}
+
+function readCache(){
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    if (c && Array.isArray(c.data)) return c;
+  } catch (e) {}
+  return null;
+}
+
+async function load(){
+  const cached = readCache();
+  if (cached) {
+    repos = cached.data;
+    setSub(repos.length, false);
+    render();
+    if (Date.now() - cached.at < CACHE_MS) return;
+  }
+
+  try {
+    const res = await fetch(
+      `https://api.github.com/users/${USER}/repos?per_page=100&sort=updated`,
+      {headers:{Accept:"application/vnd.github+json"}});
+    if (!res.ok) throw new Error(res.status);
+    const data = (await res.json())
+      .filter(r => !r.fork && !r.archived)
+      .map(r => ({
+        name: r.name, description: r.description,
+        has_pages: r.has_pages, language: r.language,
+        updated_at: r.pushed_at || r.updated_at
+      }));
+    repos = data;
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({at:Date.now(), data})); } catch(e){}
+    setSub(repos.length, false);
+    render();
+  } catch (e) {
+    if (!repos.length) {
+      repos = FALLBACK;
+      setSub(repos.length, true);
+      render();
+    }
+  }
+}
+
+document.getElementById("q").addEventListener("input", render);
+document.getElementById("sort").addEventListener("change", render);
+load();
+</script>
+</body>
+</html>
