@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VetSync 처치표 자동 열기
 // @namespace    https://github.com/chansvet
-// @version      1.0.0
+// @version      1.0.1
 // @description  전용 홈 화면 아이콘으로 VetSync를 열면 채혈·주사 패널을 자동으로 표시합니다.
 // @match        https://vetsync4.vetu1.com/*
 // @run-at       document-start
@@ -14,23 +14,30 @@
 
 (() => {
   const TRIGGER = 'vetsync-panel-auto-open';
+  const STARTED_AT = 'vetsync-panel-auto-open-at';
+  const AUTH_RETRY = 'vetsync-panel-auth-retry';
+  const WAIT_LIMIT_MS = 15 * 60 * 1000;
   if (new URL(location.href).searchParams.get('vetsync-panel') === '1') {
     sessionStorage.setItem(TRIGGER, '1');
+    sessionStorage.setItem(STARTED_AT, String(Date.now()));
   }
 
-  const startedAt = Date.now();
+  const startedAt = Number(sessionStorage.getItem(STARTED_AT)) || Date.now();
   const timer = setInterval(() => {
     if (sessionStorage.getItem(TRIGGER) !== '1') {
       clearInterval(timer);
       return;
     }
-    if (Date.now() - startedAt > 120000) {
+    if (Date.now() - startedAt > WAIT_LIMIT_MS) {
       clearInterval(timer);
+      sessionStorage.removeItem(TRIGGER);
+      sessionStorage.removeItem(STARTED_AT);
       return;
     }
     if (!document.body || location.pathname.startsWith('/login') || !localStorage.getItem('auth-storage')) return;
 
     sessionStorage.removeItem(TRIGGER);
+    sessionStorage.removeItem(STARTED_AT);
     clearInterval(timer);
     (() => {
     const API = 'https://api-vetsync4.vetu1.com/api/v1';
@@ -305,5 +312,32 @@
     if (!location.hostname.endsWith('vetsync4.vetu1.com')) alert('VetSync 화면에서 눌러주세요.');
     else open();
     })();
+
+    // 토큰이 막 만료된 경우에는 한 번만 새로고침해 VetSync의 로그인 갱신을 기다린다.
+    const watchAuth = setInterval(() => {
+      const panel = document.getElementById('vsp');
+      if (!panel) {
+        clearInterval(watchAuth);
+        return;
+      }
+      const message = panel.textContent || '';
+      const expired = /접속이 만료됐습니다|로그인이 안 되어 있습니다|서버 응답 401/.test(message);
+      if (expired) {
+        clearInterval(watchAuth);
+        if (sessionStorage.getItem(AUTH_RETRY) !== '1') {
+          sessionStorage.setItem(AUTH_RETRY, '1');
+          sessionStorage.setItem(TRIGGER, '1');
+          sessionStorage.setItem(STARTED_AT, String(Date.now()));
+          location.reload();
+        } else {
+          sessionStorage.removeItem(AUTH_RETRY);
+        }
+        return;
+      }
+      if (message && !message.includes('불러오는 중')) {
+        sessionStorage.removeItem(AUTH_RETRY);
+        clearInterval(watchAuth);
+      }
+    }, 300);
   }, 300);
 })();
