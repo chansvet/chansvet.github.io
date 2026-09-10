@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VetSync 처치표 자동 열기
 // @namespace    https://github.com/chansvet
-// @version      1.0.1
+// @version      1.0.2
 // @description  전용 홈 화면 아이콘으로 VetSync를 열면 채혈·주사 패널을 자동으로 표시합니다.
 // @match        https://vetsync4.vetu1.com/*
 // @run-at       document-start
@@ -63,6 +63,7 @@
     const COND = /필요시|prn|경우\s*x|없을\s*경우|이면|이하시|이상시|시\s*연결|시\s*중단|보류/i;
     const ROUTINE = [17, 21, 1, 9];
     const U0 = '\u0001', U1 = '\u0002';
+    const E0 = '\u0003', E1 = '\u0004';
     const pad = (n) => String(n).padStart(2, '0');
     const ymd = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
     const shift = (date, n) => {
@@ -220,7 +221,8 @@
     });
     const label = [g.info.drug, g.info.dose, g.info.route].filter(Boolean).join(' ');
     const extra = [g.info.note, g.info.instruction].filter(Boolean).join(', ');
-    const text = label + ' (' + hours.join(', ') + ')' + (extra ? ' [' + extra + ']' : '');
+    let text = label + ' (' + hours.join(', ') + ')' + (extra ? ' [' + extra + ']' : '');
+    if (/^(SC|IM)$/.test(g.info.route)) text = E0 + text + E1;
     if (COND.test(g.info.raw + ' ' + g.info.instruction)) conds.push(name + ' · ' + text);
     else lines.push(text);
     });
@@ -251,14 +253,19 @@
     s.heading + '\n' + s.groups.map((g) =>
     (g.title ? g.title + ' ' + g.cage + '\n  ' : '  ') + g.body.join('\n  ') + (g.note ? '\n  ' + g.note : '')
     ).join('\n')
-    ).join('\n\n').split(U0).join('_').split(U1).join('_');
+    ).join('\n\n')
+    .split(U0).join('_').split(U1).join('_')
+    .split(E0).join('**__').split(E1).join('__**');
     const render = (sections) => sections.map((s) =>
     '<h2 style="font-size:14px;margin:18px 0 8px;color:' + (s.warn ? '#b45309' : '#6b7280') + '">' + esc(s.heading) + '</h2>' +
     (s.groups.length ? s.groups.map((g) =>
     '<div style="padding:11px 0;border-bottom:1px solid #e5e7eb">' +
     (g.title ? '<div style="font-weight:700;font-size:16px">' + esc(g.title) +
     ' <span style="font-weight:400;color:#6b7280">' + esc(g.cage) + '</span></div>' : '') +
-    g.body.map((b) => '<div style="margin-top:3px">' + esc(b).split(U0).join('<u>').split(U1).join('</u>') + '</div>').join('') +
+    g.body.map((b) => '<div style="margin-top:3px">' + esc(b)
+    .split(U0).join('<u>').split(U1).join('</u>')
+    .split(E0).join('<strong style="font-weight:800;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:2px">')
+    .split(E1).join('</strong>') + '</div>').join('') +
     (g.note ? '<div style="margin-top:3px;color:#b45309;font-weight:600">' + esc(g.note) + '</div>' : '') +
     '</div>').join('') : '<p style="color:#6b7280">해당 항목이 없습니다.</p>')
     ).join('');
