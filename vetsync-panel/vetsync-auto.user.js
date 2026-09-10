@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VetSync 처치표 자동 열기
 // @namespace    https://github.com/chansvet
-// @version      1.0.2
+// @version      1.0.3
 // @description  전용 홈 화면 아이콘으로 VetSync를 열면 채혈·주사 패널을 자동으로 표시합니다.
 // @match        https://vetsync4.vetu1.com/*
 // @run-at       document-start
@@ -64,6 +64,9 @@
     const ROUTINE = [17, 21, 1, 9];
     const U0 = '\u0001', U1 = '\u0002';
     const E0 = '\u0003', E1 = '\u0004';
+    const O0 = '\u0005', O1 = '\u0006';
+    const X0 = '\u0007', X1 = '\u0008';
+    const INJ_BASELINE = 'vetsync-injection-baseline-v1:';
     const pad = (n) => String(n).padStart(2, '0');
     const ymd = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
     const shift = (date, n) => {
@@ -192,7 +195,7 @@
     if (!hours.includes(cell.hourSlot) || !LIVE.includes(cell.status)) return;
     if (!admitted(chart, detail, date, cell.hourSlot)) return;
     parts.forEach((p, i) => out.push({
-    patient: chart.patient.name, code: chart.patient.hospitalPatientCode,
+    pid: String(chart.patient.patientId), patient: chart.patient.name, code: chart.patient.hospitalPatientCode,
     cage: chart.cageLabel || '미지정', tag, hour: cell.hourSlot,
     order: (tag === '내일' ? 100 : 0) + cell.hourSlot,
     key: name + '#' + i, raw: name, instruction: row.instructionText || '', ...parseDrug(p),
@@ -201,71 +204,168 @@
     });
     return out;
     }
-    function groupInj(rows) {
-    const cages = {}, buckets = {}, unextended = {};
+    const normDrug = (s) => String(s || '').toLowerCase().replace(/[\s,._-]+/g, '');
+    const timeKey = (t) => t.tag + '|' + t.hour;
+    const timeLabel = (t) => {
+    const label = (t.tag === '내일' ? '내일 ' : '') + t.hour + '시';
+    return ROUTINE.includes(t.hour) ? label : U0 + label + U1;
+    };
+    const orange = (s) => O0 + s + O1;
+    const cancelled = (s) => X0 + s + X1;
+    function makeSnapshot(rows) {
+    const patients = {};
     rows.forEach((r) => {
-    const id = r.patient + '|' + r.code;
-    if (r.cage !== '미지정' || !cages[id]) cages[id] = r.cage;
-    if (r.predicted) unextended[id] = true;
-    buckets[id] = buckets[id] || {};
-    (buckets[id][r.key] = buckets[id][r.key] || { info: r, hits: [] }).hits.push(r);
+    const p = patients[r.pid] = patients[r.pid] || {
+    pid: r.pid, name: r.patient, code: r.code, cage: r.cage, predicted: false, items: {},
+    };
+    if (r.cage !== '미지정') p.cage = r.cage;
+    if (r.predicted) p.predicted = true;
+    const item = p.items[r.key] = p.items[r.key] || {
+    match: normDrug(r.drug) || normDrug(r.raw), drug: r.drug, dose: r.dose, route: r.route,
+    note: r.note, instruction: r.instruction, conditional: COND.test(r.raw + ' ' + r.instruction), times: [],
+    };
+    if (!item.times.some((t) => timeKey(t) === timeKey(r))) {
+    item.times.push({ tag: r.tag, hour: r.hour, order: r.order });
+    }
     });
+    Object.values(patients).forEach((p) => {
+    p.items = Object.values(p.items).map((item) => ({
+    ...item, times: item.times.sort((a, b) => a.order - b.order),
+    }));
+    });
+    return { patients };
+    }
+    const rawItem = (item) => {
+    const label = [item.drug, item.dose, item.route].filter(Boolean).join(' ');
+    const extra = [item.note, item.instruction].filter(Boolean).join(', ');
+    return label + ' (' + item.times.map(timeLabel).join(', ') + ')' + (extra ? ' [' + extra + ']' : '');
+    };
+    function changedItem(item, prev, kind) {
+    let text;
+    if (kind === 'added') text = orange(rawItem(item));
+    else if (kind === 'removed') text = cancelled(rawItem(item));
+    else {
+    const field = (now, before) => now === before ? now : orange([before, now].filter(Boolean).join('→'));
+    const label = [field(item.drug, prev.drug), field(item.dose, prev.dose), field(item.route, prev.route)]
+    .filter(Boolean).join(' ');
+    const nowTimes = new Set(item.times.map(timeKey));
+    const oldTimes = new Set(prev.times.map(timeKey));
+    const times = item.times.map((t) => oldTimes.has(timeKey(t)) ? timeLabel(t) : orange(timeLabel(t)));
+    prev.times.forEach((t) => { if (!nowTimes.has(timeKey(t))) times.push(cancelled(timeLabel(t))); });
+    const extraNow = [item.note, item.instruction].filter(Boolean).join(', ');
+    const extraOld = [prev.note, prev.instruction].filter(Boolean).join(', ');
+    const extra = extraNow === extraOld ? extraNow : orange([extraOld, extraNow].filter(Boolean).join('→'));
+    text = label + ' (' + times.join(', ') + ')' + (extra ? ' [' + extra + ']' : '');
+    }
+    if (/^(SC|IM)$/.test(item.route)) text = E0 + text + E1;
+    return text;
+    }
+    const sameItem = (a, b) => a.drug === b.drug && a.dose === b.dose && a.route === b.route &&
+    a.note === b.note && a.instruction === b.instruction &&
+    a.times.map(timeKey).join(',') === b.times.map(timeKey).join(',');
+    function compareSnapshot(current, previous, states) {
     const normal = [], cond = [];
-    Object.keys(buckets).forEach((id) => {
-    const name = id.split('|')[0] + (unextended[id] ? '(미연장)' : '');
+    let changes = 0;
+    const ids = new Set([...Object.keys(current.patients), ...Object.keys(previous ? previous.patients : {})]);
+    ids.forEach((pid) => {
+    const now = current.patients[pid];
+    const old = previous && previous.patients[pid];
+    const p = now || old;
+    const state = states[pid] || {};
+    const extended = !!(old && old.predicted && !now?.predicted && state.extended);
+    const discharged = !!(!now && old && state.discharged);
+    let title = p.name;
+    if (now?.predicted) title += '(미연장)';
+    else if (extended) { title += '(' + orange('연장') + ')'; changes += 1; }
+    else if (discharged) { title += '(' + orange('퇴원') + ')'; changes += 1; }
+    const currentItems = now ? now.items : [];
+    const oldItems = old ? old.items : [];
+    const used = new Set();
     const lines = [], conds = [];
-    Object.values(buckets[id]).forEach((g) => {
-    const hours = g.hits.sort((a, b) => a.order - b.order).map((h) => {
-    const label = (h.tag === '내일' ? '내일 ' : '') + h.hour + '시';
-    return ROUTINE.includes(h.hour) ? label : U0 + label + U1;
+    currentItems.forEach((item) => {
+    let pi = oldItems.findIndex((candidate, i) => !used.has(i) && candidate.match === item.match && sameItem(candidate, item));
+    if (pi < 0) pi = oldItems.findIndex((candidate, i) => !used.has(i) && candidate.match === item.match);
+    const prev = pi >= 0 ? oldItems[pi] : null;
+    if (pi >= 0) used.add(pi);
+    const changed = !prev || !sameItem(item, prev);
+    if (changed) changes += 1;
+    const line = changedItem(item, prev, prev ? 'changed' : 'added');
+    (item.conditional ? conds : lines).push(line);
     });
-    const label = [g.info.drug, g.info.dose, g.info.route].filter(Boolean).join(' ');
-    const extra = [g.info.note, g.info.instruction].filter(Boolean).join(', ');
-    let text = label + ' (' + hours.join(', ') + ')' + (extra ? ' [' + extra + ']' : '');
-    if (/^(SC|IM)$/.test(g.info.route)) text = E0 + text + E1;
-    if (COND.test(g.info.raw + ' ' + g.info.instruction)) conds.push(name + ' · ' + text);
-    else lines.push(text);
+    oldItems.forEach((item, i) => {
+    if (used.has(i)) return;
+    changes += 1;
+    const line = changedItem(item, null, 'removed');
+    (item.conditional ? conds : lines).push(line);
     });
-    if (lines.length) normal.push({ title: name, cage: cages[id], body: lines, note: '' });
-    cond.push(...conds);
+    if (lines.length) normal.push({ title, cage: p.cage, body: lines, note: '' });
+    cond.push(...conds.map((line) => title + ' · ' + line));
     });
-    return { normal, cond };
+    return { normal, cond, changes };
+    }
+    const baselineKey = (date) => INJ_BASELINE + HOSPITAL_ID + ':' + date;
+    const loadBaseline = (date) => {
+    try { return JSON.parse(localStorage.getItem(baselineKey(date))) || null; }
+    catch (_) { return null; }
+    };
+    const saveBaseline = (date, snapshot) => {
+    try { localStorage.setItem(baselineKey(date), JSON.stringify(snapshot)); }
+    catch (_) { /* 저장이 막혀도 목록 자체는 계속 보여준다. */ }
     }
     async function injections(date) {
     const next = shift(date, 1);
     const today = await collect(date);
     const tomorrow = await collect(next);
     const rows = [];
+    const states = {};
+    today.charts.forEach((c) => {
+    states[String(c.patient.patientId)] = { discharged: !!c.discharged, extended: false };
+    });
     today.charts.forEach((c, i) => rows.push(...pickInj(c, today.details[i], date, EVENING, '오늘')));
-    const extended = new Set(tomorrow.charts.map((c) => c.patient.patientId));
+    const extended = new Set(tomorrow.charts.map((c) => String(c.patient.patientId)));
+    extended.forEach((pid) => {
+    states[pid] = states[pid] || { discharged: false, extended: false };
+    states[pid].extended = true;
+    });
     tomorrow.charts.forEach((c, i) => rows.push(...pickInj(c, tomorrow.details[i], next, NEXT, '내일')));
     today.charts.forEach((c, i) => {
-    if (extended.has(c.patient.patientId) || c.discharged) return;
+    if (extended.has(String(c.patient.patientId)) || c.discharged) return;
     pickInj(c, today.details[i], date, NEXT, '내일').forEach((r) => rows.push({ ...r, predicted: true }));
     });
-    const g = groupInj(rows);
+    const snapshot = makeSnapshot(rows);
+    let previous = loadBaseline(date);
+    if (!previous) { saveBaseline(date, snapshot); previous = snapshot; }
+    const g = compareSnapshot(snapshot, previous, states);
     const out = [{ heading: date + ' 17시 ~ ' + next + ' 15시 주사', groups: g.normal }];
     if (g.cond.length) out.push({ heading: '조건부', groups: g.cond.map((c) => ({ title: '', cage: '', body: [c], note: '' })) });
+    out.changeCount = g.changes;
+    out.snapshot = snapshot;
+    out.baselineKey = baselineKey(date);
     return out;
     }
     const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const toHtml = (s) => esc(s)
+    .split(U0).join('<u>').split(U1).join('</u>')
+    .split(E0).join('<strong style="font-weight:800;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:2px">')
+    .split(E1).join('</strong>')
+    .split(O0).join('<span style="color:#c2410c;font-weight:700">').split(O1).join('</span>')
+    .split(X0).join('<span style="color:#c2410c;font-weight:700;text-decoration:line-through;text-decoration-thickness:2px">').split(X1).join('</span>');
     const asText = (sections) => sections.map((s) =>
     s.heading + '\n' + s.groups.map((g) =>
     (g.title ? g.title + ' ' + g.cage + '\n  ' : '  ') + g.body.join('\n  ') + (g.note ? '\n  ' + g.note : '')
     ).join('\n')
     ).join('\n\n')
     .split(U0).join('_').split(U1).join('_')
-    .split(E0).join('**__').split(E1).join('__**');
+    .split(E0).join('**__').split(E1).join('__**')
+    .split(O0).join('**').split(O1).join('**')
+    .split(X0).join('~~').split(X1).join('~~');
     const render = (sections) => sections.map((s) =>
     '<h2 style="font-size:14px;margin:18px 0 8px;color:' + (s.warn ? '#b45309' : '#6b7280') + '">' + esc(s.heading) + '</h2>' +
     (s.groups.length ? s.groups.map((g) =>
     '<div style="padding:11px 0;border-bottom:1px solid #e5e7eb">' +
-    (g.title ? '<div style="font-weight:700;font-size:16px">' + esc(g.title) +
+    (g.title ? '<div style="font-weight:700;font-size:16px">' + toHtml(g.title) +
     ' <span style="font-weight:400;color:#6b7280">' + esc(g.cage) + '</span></div>' : '') +
-    g.body.map((b) => '<div style="margin-top:3px">' + esc(b)
-    .split(U0).join('<u>').split(U1).join('</u>')
-    .split(E0).join('<strong style="font-weight:800;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:2px">')
-    .split(E1).join('</strong>') + '</div>').join('') +
+    g.body.map((b) => '<div style="margin-top:3px">' + toHtml(b) + '</div>').join('') +
     (g.note ? '<div style="margin-top:3px;color:#b45309;font-weight:600">' + esc(g.note) + '</div>' : '') +
     '</div>').join('') : '<p style="color:#6b7280">해당 항목이 없습니다.</p>')
     ).join('');
@@ -303,7 +403,16 @@
     try {
     const sections = await TABS.find((t) => t.id === id).run(ymd(new Date()));
     text = asText(sections);
-    body.innerHTML = render(sections);
+    const changes = id === 'inj' && sections.changeCount ?
+    '<div style="position:sticky;top:61px;z-index:1;margin:0 -16px;padding:9px 16px;background:#fff7ed;border-bottom:1px solid #fed7aa;display:flex;align-items:center;gap:10px">' +
+    '<strong style="color:#c2410c">변경 ' + sections.changeCount + '건</strong><span style="flex:1"></span>' +
+    '<button id="vsp-accept" style="font:inherit;font-weight:700;padding:7px 12px;border:1px solid #c2410c;border-radius:6px;background:#fff;color:#c2410c">변경 확인</button></div>' : '';
+    body.innerHTML = changes + render(sections);
+    const accept = body.querySelector('#vsp-accept');
+    if (accept) accept.onclick = () => {
+    localStorage.setItem(sections.baselineKey, JSON.stringify(sections.snapshot));
+    show(id);
+    };
     } catch (e) {
     text = '';
     body.innerHTML = '<p style="color:#b91c1c">' + esc(e.message) + '</p>';
