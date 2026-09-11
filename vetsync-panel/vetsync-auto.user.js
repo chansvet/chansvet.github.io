@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         VetSync 처치표 자동 열기
 // @namespace    https://github.com/chansvet
-// @version      1.0.4
+// @version      1.0.5
 // @description  전용 홈 화면 아이콘으로 VetSync를 열면 채혈·주사 패널을 자동으로 표시합니다.
 // @match        https://vetsync4.vetu1.com/*
 // @run-at       document-start
-// @inject-into  auto
+// @weight       999
+// @inject-into  page
 // @noframes
 // @grant        none
 // @updateURL    https://chansvet.github.io/vetsync-panel/vetsync-auto.meta.js
@@ -421,8 +422,26 @@
     };
     show('blood');
     }
-    if (!location.hostname.endsWith('vetsync4.vetu1.com')) alert('VetSync 화면에서 눌러주세요.');
-    else open();
+    function mountButton() {
+    if (document.getElementById('vsp-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'vsp-btn';
+    btn.textContent = '목록';
+    btn.setAttribute('style', 'position:fixed;right:18px;bottom:18px;z-index:2147483646;' +
+    'width:64px;height:64px;border:0;border-radius:32px;background:#0f766e;color:#fff;' +
+    'font:700 16px/1 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;' +
+    'box-shadow:0 4px 14px rgba(0,0,0,.25);cursor:pointer');
+    btn.onclick = open;
+    document.body.appendChild(btn);
+    }
+    if (!location.hostname.endsWith('vetsync4.vetu1.com')) {
+    alert('VetSync 화면에서 눌러주세요.');
+    } else if (window.__VETSYNC_BUTTON) {
+    mountButton();
+    setInterval(mountButton, 3000);
+    } else {
+    open();
+    }
     })();
   };
 
@@ -469,8 +488,9 @@
   };
 
   const attempt = () => {
-    if (!document.body || location.pathname.startsWith('/login') || !localStorage.getItem('auth-storage')) return;
+    if (!document.body || location.pathname.startsWith('/login')) return;
     installLauncher();
+    if (!localStorage.getItem('auth-storage')) return;
     if (!isArmed() || document.getElementById('vsp')) return;
     launchPanel();
     watchPanel();
