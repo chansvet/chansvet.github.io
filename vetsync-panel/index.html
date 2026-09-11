@@ -41,6 +41,7 @@
       <li>단축어 앱에서 <b>URL 열기</b>에 아래 전용 주소를 넣고 홈 화면에 추가합니다.</li>
     </ol>
     <a class="drag secondary" href="vetsync-auto.user.js">자동실행 파일 열기</a>
+    <button id="download-js">JS 파일 다운로드</button>
     <textarea id="auto-url" readonly>https://chansvet.github.io/vetsync-panel/launch.html</textarea>
     <button id="copy-auto">전용 주소 복사</button>
     <p class="note">기존 단축어도 전용 주소를 위 주소로 바꿔야 합니다. 패널이 뜨지 않으면 VetSync 화면 오른쪽 아래의 처치표 버튼을 누르세요.</p>
@@ -87,6 +88,23 @@
     document.getElementById('auto-url').select();
     try { await navigator.clipboard.writeText('https://chansvet.github.io/vetsync-panel/launch.html'); e.target.textContent = '복사됨'; }
     catch (_) { e.target.textContent = '길게 눌러 복사하세요'; }
+  };
+  document.getElementById('download-js').onclick = async (e) => {
+    try {
+      const response = await fetch('vetsync-auto.user.js?download=' + Date.now());
+      if (!response.ok) throw new Error('download failed');
+      const blob = new Blob([await response.text()], { type: 'application/javascript' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'vetsync-auto.user.js';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      e.target.textContent = '다운로드됨';
+    } catch (_) {
+      e.target.textContent = '다운로드 실패';
+    }
   };
   document.getElementById('copy').onclick = async (e) => {
     document.getElementById('code').select();
