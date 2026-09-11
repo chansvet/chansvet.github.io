@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VetSync 처치표 자동 열기
 // @namespace    https://github.com/chansvet
-// @version      1.0.6
+// @version      1.0.7
 // @description  Safari 전용 주소로 VetSync를 열면 채혈·주사 패널을 자동으로 표시합니다. 실험적 기능입니다.
 // @match        https://vetsync4.vetu1.com/*
 // @run-at       document-start
@@ -60,6 +60,7 @@
     const NOTINJ = /드레싱|소독|사진|방사선|초음파|혈검|혈액검사|혈당|체중|체온|심박|호흡|혈압|구토|배변|배뇨|식이|산소|음수|물그릇|핫팩|자세|산책|라인|배액|세정|점이액|교체|측정|확인|보정|면회|목욕|미용|밴드|붕대|카테터|수혈|튜브|네뷸|가습|강급|급여|스푼|연고|스프레이|허니|술부|귀\s?세정|cryo|속도|변경|기입|흉방|요배양|검사|\bCRP\b/i;
     const CRI = /\bcri\b|\/\s*hr\b|시간당/i;
     const COND = /필요시|prn|경우\s*x|없을\s*경우|이면|이하시|이상시|시\s*연결|시\s*중단|보류/i;
+    const METO = /\bmeto(?:clopramide)?\w*|메토클로프라미드/i;
     const ROUTINE = [17, 21, 1, 9];
     const U0 = '\u0001', U1 = '\u0002';
     const E0 = '\u0003', E1 = '\u0004';
@@ -71,6 +72,11 @@
     const shift = (date, n) => {
     const d = new Date(date + 'T00:00:00+09:00');
     d.setDate(d.getDate() + n);
+    return ymd(d);
+    };
+    const previousMonthStart = (date) => {
+    const d = new Date(date + 'T00:00:00+09:00');
+    d.setMonth(d.getMonth() - 1, 1);
     return ymd(d);
     };
     const headers = () => {
@@ -342,6 +348,76 @@
     out.baselineKey = baselineKey(date);
     return out;
     }
+    const doseLabel = (text) => {
+    const m = String(text || '').match(/(\d+(?:\.\d+)?)\s*(mpk|mg\s*\/\s*kg)\b/i);
+    if (!m) return '';
+    return m[1] + (m[2].toLowerCase() === 'mpk' ? 'mpk' : 'mg/kg');
+    };
+    const compact = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+    function metoEntries(chart, detail, date) {
+    const entries = [];
+    treatRows(detail).forEach((row) => {
+    const name = compact(row.displayName);
+    const instruction = compact(row.instructionText);
+    const raw = [name, instruction].filter(Boolean).join(' / ');
+    if (!METO.test(raw)) return;
+    entries.push({
+    date,
+    patient: chart.patient.name,
+    code: chart.patient.hospitalPatientCode,
+    raw,
+    dose: doseLabel(raw),
+    });
+    });
+    return entries;
+    }
+    const tally = (items, key) => {
+    const totals = new Map();
+    items.forEach((item) => {
+    const value = key(item);
+    if (!value) return;
+    totals.set(value, (totals.get(value) || 0) + 1);
+    });
+    return [...totals.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'));
+    };
+    const auditDates = (start, end) => {
+    const dates = [];
+    for (let date = start; date <= end; date = shift(date, 1)) dates.push(date);
+    return dates;
+    };
+    async function metoAudit(endDate) {
+    const startDate = previousMonthStart(endDate);
+    const dates = auditDates(startDate, endDate);
+    const results = new Array(dates.length);
+    let cursor = 0;
+    const worker = async () => {
+    while (cursor < dates.length) {
+    const index = cursor++;
+    const date = dates[index];
+    const list = await get('/charts?date=' + date);
+    const details = await Promise.all(list.items.map((chart) => get('/charts/' + chart.chartId)));
+    results[index] = list.items.flatMap((chart, i) => metoEntries(chart, details[i], date));
+    }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, dates.length) }, worker));
+    const entries = results.flat();
+    const doses = tally(entries, (entry) => entry.dose);
+    const rawOrders = tally(entries, (entry) => entry.raw);
+    const explicitCount = entries.filter((entry) => entry.dose).length;
+    const range = startDate + ' ~ ' + endDate;
+    const summary = [
+    'meto 처방 행 ' + entries.length + '건',
+    'mpk 명시 ' + explicitCount + '건',
+    'mpk 미기재 또는 mL 표기 ' + (entries.length - explicitCount) + '건',
+    ];
+    return [
+    { heading: range + ' Metoclopramide 처방 감사', groups: [
+    { title: '요약', cage: '차트 수정 없음', body: summary, note: '' },
+    { title: '명시 용량', cage: '', body: doses.length ? doses.map(([dose, count]) => dose + ' · ' + count + '건') : ['mpk 표기가 없습니다.'], note: '' },
+    { title: '원문 처방', cage: '', body: rawOrders.length ? rawOrders.map(([raw, count]) => raw + ' · ' + count + '건') : ['meto 처방이 없습니다.'], note: '' },
+    ] },
+    ];
+    }
     const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     const toHtml = (s) => esc(s)
     .split(U0).join('<u>').split(U1).join('</u>')
@@ -371,6 +447,7 @@
     const TABS = [
     { id: 'blood', label: '채혈', run: bloodwork },
     { id: 'inj', label: '주사', run: injections },
+    { id: 'meto', label: 'Meto', run: metoAudit },
     ];
     function open() {
     const old = document.getElementById('vsp');
