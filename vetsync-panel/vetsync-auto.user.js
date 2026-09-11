@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         VetSync 처치표 자동 열기
 // @namespace    https://github.com/chansvet
-// @version      1.0.5
-// @description  전용 홈 화면 아이콘으로 VetSync를 열면 채혈·주사 패널을 자동으로 표시합니다.
+// @version      1.0.6
+// @description  Safari 전용 주소로 VetSync를 열면 채혈·주사 패널을 자동으로 표시합니다. 실험적 기능입니다.
 // @match        https://vetsync4.vetu1.com/*
 // @run-at       document-start
-// @weight       999
-// @inject-into  page
+// @inject-into  auto
 // @noframes
 // @grant        none
 // @updateURL    https://chansvet.github.io/vetsync-panel/vetsync-auto.meta.js
@@ -16,26 +15,29 @@
 (() => {
   const TRIGGER = 'vetsync-panel-auto-open';
   const STARTED_AT = 'vetsync-panel-auto-open-at';
-  const ACTIVE_UNTIL = 'vetsync-panel-auto-open-until';
   const AUTH_RETRY = 'vetsync-panel-auth-retry';
   const WAIT_LIMIT_MS = 15 * 60 * 1000;
-  const hasMarker = () => new URL(location.href).searchParams.get('vetsync-panel') === '1' ||
-    location.hash.includes('vetsync-panel');
-  const arm = () => {
+  if (new URL(location.href).searchParams.get('vetsync-panel') === '1') {
     sessionStorage.setItem(TRIGGER, '1');
     sessionStorage.setItem(STARTED_AT, String(Date.now()));
-    localStorage.setItem(ACTIVE_UNTIL, String(Date.now() + WAIT_LIMIT_MS));
   };
-  const disarm = () => {
+  const startedAt = Number(sessionStorage.getItem(STARTED_AT)) || Date.now();
+  const timer = setInterval(() => {
+    if (sessionStorage.getItem(TRIGGER) !== '1') {
+      clearInterval(timer);
+      return;
+    }
+    if (Date.now() - startedAt > WAIT_LIMIT_MS) {
+      clearInterval(timer);
+      sessionStorage.removeItem(TRIGGER);
+      sessionStorage.removeItem(STARTED_AT);
+      return;
+    }
+    if (!document.body || location.pathname.startsWith('/login') || !localStorage.getItem('auth-storage')) return;
+
     sessionStorage.removeItem(TRIGGER);
     sessionStorage.removeItem(STARTED_AT);
-    localStorage.removeItem(ACTIVE_UNTIL);
-  };
-  const isArmed = () => sessionStorage.getItem(TRIGGER) === '1' ||
-    Number(localStorage.getItem(ACTIVE_UNTIL)) > Date.now();
-  if (hasMarker()) arm();
-
-  const launchPanel = () => {
+    clearInterval(timer);
     (() => {
     const API = 'https://api-vetsync4.vetu1.com/api/v1';
     const HOSPITAL_ID = '24';
@@ -443,22 +445,7 @@
     open();
     }
     })();
-  };
 
-  const installLauncher = () => {
-    if (!document.body || document.getElementById('vsp-launcher') || location.pathname.startsWith('/login')) return;
-    const button = document.createElement('button');
-    button.id = 'vsp-launcher';
-    button.textContent = '처치표';
-    button.setAttribute('style', 'position:fixed;right:14px;bottom:18px;z-index:2147483646;border:0;border-radius:7px;' +
-      'padding:10px 14px;background:#0f766e;color:#fff;font:700 14px/1 -apple-system,BlinkMacSystemFont,sans-serif;' +
-      'box-shadow:0 2px 8px rgba(0,0,0,.22)');
-    button.onclick = () => { arm(); attempt(); };
-    document.body.appendChild(button);
-  };
-
-  const watchPanel = () => {
-    // 토큰이 막 만료된 경우에는 한 번만 새로고침해 VetSync의 로그인 갱신을 기다린다.
     const watchAuth = setInterval(() => {
       const panel = document.getElementById('vsp');
       if (!panel) {
@@ -471,34 +458,18 @@
         clearInterval(watchAuth);
         if (sessionStorage.getItem(AUTH_RETRY) !== '1') {
           sessionStorage.setItem(AUTH_RETRY, '1');
-          arm();
+          sessionStorage.setItem(TRIGGER, '1');
+          sessionStorage.setItem(STARTED_AT, String(Date.now()));
           location.reload();
         } else {
           sessionStorage.removeItem(AUTH_RETRY);
-          disarm();
         }
         return;
       }
       if (message && !message.includes('불러오는 중')) {
         sessionStorage.removeItem(AUTH_RETRY);
-        disarm();
         clearInterval(watchAuth);
       }
     }, 300);
-  };
-
-  const attempt = () => {
-    if (!document.body || location.pathname.startsWith('/login')) return;
-    installLauncher();
-    if (!localStorage.getItem('auth-storage')) return;
-    if (!isArmed() || document.getElementById('vsp')) return;
-    launchPanel();
-    watchPanel();
-  };
-
-  attempt();
-  const timer = setInterval(() => {
-    if (Number(localStorage.getItem(ACTIVE_UNTIL)) && !isArmed()) disarm();
-    attempt();
   }, 300);
 })();
